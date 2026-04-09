@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const cel = @import("cel");
 
@@ -5,11 +6,22 @@ const NsTimer = struct {
     start_ns: u64,
 
     pub fn start() NsTimer {
-        return .{ .start_ns = std.c.mach_absolute_time() };
+        return .{ .start_ns = now() };
     }
 
     pub fn read(self: NsTimer) u64 {
-        return std.c.mach_absolute_time() - self.start_ns;
+        return now() - self.start_ns;
+    }
+
+    fn now() u64 {
+        if (comptime builtin.os.tag.isDarwin()) {
+            return std.c.mach_absolute_time();
+        }
+        const clock_id: std.c.clockid_t = .MONOTONIC;
+        var ts: std.c.timespec = undefined;
+        const rc = std.c.clock_gettime(clock_id, &ts);
+        std.debug.assert(rc == 0);
+        return (@as(u64, @intCast(ts.sec)) * std.time.ns_per_s) + @as(u64, @intCast(ts.nsec));
     }
 };
 

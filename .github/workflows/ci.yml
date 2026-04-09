@@ -20,7 +20,7 @@ jobs:
         run: zig build
 
       - name: Unit tests
-        run: zig test src/cel.zig -lc --summary all
+        run: zig test src/cel.zig -lc
 
   conformance:
     runs-on: ubuntu-latest
@@ -34,6 +34,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.23"
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
 
       - name: Clone cel-spec
         run: git clone --depth 1 https://github.com/google/cel-spec.git .cache/cel-spec

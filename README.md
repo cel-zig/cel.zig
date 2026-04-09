@@ -8,9 +8,11 @@ A Zig implementation of the [Common Expression Language](https://cel.dev/) (CEL)
 ![Conformance](https://img.shields.io/badge/conformance-2%2C454%2F2%2C454-brightgreen)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 
-## Why Zig?
+## Why CEL? Why Zig?
 
-CEL implementations exist in Go, C++, Rust, and Java. This one exists because Zig gives you explicit allocator control, no hidden heap traffic, and predictable performance  - things that matter when you're evaluating expressions in a hot loop inside a controller or admission webhook. The result: 5-21x faster compilation and 5-11x faster evaluation than cel-go, with a single heap allocation for scalar expressions.
+[CEL](https://cel.dev/) is a lightweight expression language designed for security, policy, and configuration. It's used across the cloud-native ecosystem: Kubernetes (validation rules, admission policies, CRD defaulting), Istio (authorization policies), Tekton (pipeline conditions), Google Cloud IAM (policy bindings), Firebase (security rules), Envoy (RBAC filters), and many others. Implementations exist in [Go](https://github.com/google/cel-go), [C++](https://github.com/google/cel-cpp), [Rust](https://github.com/clarkmcc/cel-rust), [Java](https://github.com/google/cel-java), and [Python](https://github.com/cloud-custodian/cel-python).
+
+This implementation brings CEL to Zig with explicit allocator control, zero hidden heap allocations, and predictable performance. Compiled programs are immutable and safe for concurrent evaluation. Scalar expressions evaluate with a single heap allocation vs cel-go's 3-5, and compilation is 5-21x faster.
 
 ## Features
 
@@ -51,7 +53,7 @@ Beyond the CEL standard library:
 ## Quick Start
 
 ```sh
-zig fetch --save git+https://github.com/a-hilaly/cel.zig
+zig fetch --save git+https://github.com/cel-zig/cel.zig
 ```
 
 ```zig
