@@ -1,0 +1,14 @@
+FROM kcov/kcov
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget xz-utils ca-certificates libc-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q https://ziglang.org/builds/zig-aarch64-linux-0.16.0-dev.3132+fd2718f82.tar.xz \
+    && tar xf zig-aarch64-linux-0.16.0-dev.3132+fd2718f82.tar.xz \
+    && mv zig-aarch64-linux-0.16.0-dev.3132+fd2718f82 /usr/local/zig \
+    && ln -s /usr/local/zig/zig /usr/local/bin/zig \
+    && rm zig-aarch64-linux-0.16.0-dev.3132+fd2718f82.tar.xz
+
+WORKDIR /cel

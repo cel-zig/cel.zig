@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3128+ad7a02822
+
+      - name: Build
+        run: zig build
+
+      - name: Unit tests
+        run: zig test src/cel.zig -lc --summary all
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0-dev.3128+ad7a02822
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+
+      - name: Clone cel-spec
+        run: git clone --depth 1 https://github.com/google/cel-spec.git .cache/cel-spec
+
+      - name: Conformance tests
+        run: zig build test-conformance --summary all
