@@ -29,11 +29,34 @@ pub const DynamicMatcher = *const fn (
     params: []const types.TypeRef,
 ) ?types.TypeRef;
 
+pub const Precompile = struct {
+    /// Called at compile time with one entry per argument. Each entry
+    /// is non-null if and only if that argument is a compile-time
+    /// literal. The function returns an opaque handle if it can
+    /// precompile, or `error.Skip` to fall through to the normal
+    /// implementation. For receiver-style calls, args[0] is the
+    /// receiver (typically runtime data, so often null).
+    prepare: *const fn (std.mem.Allocator, []const ?value.Value) anyerror!*anyopaque,
+    /// Called at eval time instead of `implementation` when a handle
+    /// exists. Receives the full runtime argument list.
+    eval: *const fn (std.mem.Allocator, *anyopaque, []const value.Value) EvalError!value.Value,
+    /// Called once when the Program is deinit'd.
+    destroy: *const fn (std.mem.Allocator, *anyopaque) void,
+};
+
+pub const PrecompileSkip = error{Skip};
+
+pub const PreparedContext = struct {
+    ptr: *anyopaque,
+    destroy: *const fn (std.mem.Allocator, *anyopaque) void,
+};
+
 pub const DynamicFunction = struct {
     name: []const u8,
     receiver_style: bool,
     match: DynamicMatcher,
     implementation: FunctionImpl,
+    precompile: ?Precompile = null,
 };
 
 pub const ResolutionRef = struct {
@@ -422,6 +445,17 @@ pub const Env = struct {
         matcher: DynamicMatcher,
         implementation: FunctionImpl,
     ) !u32 {
+        return self.addDynamicFunctionEx(name, receiver_style, matcher, implementation, null);
+    }
+
+    pub fn addDynamicFunctionEx(
+        self: *Env,
+        name: []const u8,
+        receiver_style: bool,
+        matcher: DynamicMatcher,
+        implementation: FunctionImpl,
+        precompile: ?Precompile,
+    ) !u32 {
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
 
@@ -431,6 +465,7 @@ pub const Env = struct {
             .receiver_style = receiver_style,
             .match = matcher,
             .implementation = implementation,
+            .precompile = precompile,
         });
         return idx;
     }

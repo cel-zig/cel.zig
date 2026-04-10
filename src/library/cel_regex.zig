@@ -1,4 +1,6 @@
 const std = @import("std");
+const cel_env = @import("../env/env.zig");
+const value_mod = @import("../env/value.zig");
 
 pub const Error = std.mem.Allocator.Error || error{
     InvalidPattern,
@@ -54,14 +56,7 @@ const Pattern = struct {
 };
 
 pub fn matches(allocator: std.mem.Allocator, text: []const u8, pattern_text: []const u8) Error!bool {
-    const pattern_runes = try decodeUtf8(allocator, pattern_text);
-    defer allocator.free(pattern_runes);
-
-    var parser = Parser{
-        .allocator = allocator,
-        .pattern = pattern_runes,
-    };
-    var compiled = try parser.parse();
+    var compiled = try compilePattern(allocator, pattern_text);
     defer compiled.deinit();
 
     const text_runes = try decodeUtf8(allocator, text);
@@ -69,6 +64,69 @@ pub fn matches(allocator: std.mem.Allocator, text: []const u8, pattern_text: []c
 
     return try matcherMatches(allocator, &compiled, text_runes);
 }
+
+fn compilePattern(allocator: std.mem.Allocator, pattern_text: []const u8) Error!Pattern {
+    const pattern_runes = try decodeUtf8(allocator, pattern_text);
+    defer allocator.free(pattern_runes);
+
+    var parser = Parser{
+        .allocator = allocator,
+        .pattern = pattern_runes,
+    };
+    return parser.parse();
+}
+
+// ---------------------------------------------------------------------------
+// Compile-time precompile interface for the matches() builtin.
+//
+// Allows the optimizer to compile a literal regex pattern once at program
+// creation time. The compiled Pattern is stored on the Program as an
+// opaque artifact and reused on every eval call, skipping re-parsing.
+// ---------------------------------------------------------------------------
+
+/// Called at compile time. args[0] is the receiver text (typically
+/// runtime data, so usually null). args[1] is the pattern -- if it's
+/// a string literal we compile it once and cache the result.
+pub fn prepareMatches(allocator: std.mem.Allocator, args: []const ?value_mod.Value) anyerror!*anyopaque {
+    if (args.len != 2) return error.Skip;
+    const pattern_val = args[1] orelse return error.Skip;
+    if (pattern_val != .string) return error.Skip;
+    const compiled = try compilePattern(allocator, pattern_val.string);
+    const ptr = try allocator.create(Pattern);
+    ptr.* = compiled;
+    return @ptrCast(ptr);
+}
+
+/// Called at eval time when a precompiled pattern exists. Skips
+/// pattern re-parsing and runs the matcher directly.
+pub fn evalMatchesPrepared(
+    allocator: std.mem.Allocator,
+    ctx: *anyopaque,
+    args: []const value_mod.Value,
+) cel_env.EvalError!value_mod.Value {
+    const pattern: *const Pattern = @ptrCast(@alignCast(ctx));
+    if (args.len < 1 or args[0] != .string) return value_mod.RuntimeError.TypeMismatch;
+    const text_runes = decodeUtf8(allocator, args[0].string) catch return error.OutOfMemory;
+    defer allocator.free(text_runes);
+    const result = matcherMatches(allocator, pattern, text_runes) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return value_mod.RuntimeError.TypeMismatch,
+    };
+    return .{ .bool = result };
+}
+
+/// Called once when the Program is deinit'd.
+pub fn destroyMatchesPattern(allocator: std.mem.Allocator, ctx: *anyopaque) void {
+    const pattern: *Pattern = @ptrCast(@alignCast(ctx));
+    pattern.deinit();
+    allocator.destroy(pattern);
+}
+
+pub const matches_precompile = cel_env.Precompile{
+    .prepare = prepareMatches,
+    .eval = evalMatchesPrepared,
+    .destroy = destroyMatchesPattern,
+};
 
 const Parser = struct {
     allocator: std.mem.Allocator,
@@ -457,9 +515,7 @@ pub fn findAll(allocator: std.mem.Allocator, text: []const u8, pattern_text: []c
 // Regex extension library (extract, extractAll, replace, replaceN)
 // ---------------------------------------------------------------------------
 
-const cel_env = @import("../env/env.zig");
 const types = @import("../env/types.zig");
-const value_mod = @import("../env/value.zig");
 
 pub const regex_library = cel_env.Library{
     .name = "cel.lib.ext.regex",

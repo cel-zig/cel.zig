@@ -33,7 +33,7 @@ pub fn installStandardLibrary(environment: *cel_env.Env) !void {
     _ = try environment.addDynamicFunction("startsWith", true, matchStringBinaryReceiver, evalStartsWith);
     _ = try environment.addDynamicFunction("endsWith", true, matchStringBinaryReceiver, evalEndsWith);
     _ = try environment.addDynamicFunction("contains", true, matchStringBinaryReceiver, evalContains);
-    _ = try environment.addDynamicFunction("matches", true, matchStringBinaryReceiver, evalMatches);
+    _ = try environment.addDynamicFunctionEx("matches", true, matchStringBinaryReceiver, evalMatches, cel_regex.matches_precompile);
 
     _ = try environment.addDynamicFunction("base64.encode", false, matchBase64Encode, evalBase64Encode);
     _ = try environment.addDynamicFunction("base64.decode", false, matchBase64Decode, evalBase64Decode);

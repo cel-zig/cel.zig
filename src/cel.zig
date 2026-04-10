@@ -156,6 +156,7 @@ pub fn compileOptimized(
     errdefer program.deinit();
     compiler.optimize.optimize(allocator, &program, environment, &.{
         compiler.optimize.constantFolding,
+        compiler.optimize.precompileArguments,
     }) catch return error.OptimizationFailed;
     return program;
 }

@@ -69,8 +69,16 @@ pub const Program = struct {
     call_resolution: std.ArrayListUnmanaged(CallResolution) = .empty,
     operator_resolution: std.ArrayListUnmanaged(?env.ResolutionRef) = .empty,
     result_type: types.TypeRef,
+    /// Precompiled data for dynamic function calls, indexed by AST node.
+    /// Populated by the precompileArguments optimizer pass. null means no
+    /// precompiled data for that node.
+    prepared: std.ArrayListUnmanaged(?env.PreparedContext) = .empty,
 
     pub fn deinit(self: *Program) void {
+        for (self.prepared.items) |maybe| {
+            if (maybe) |ctx| ctx.destroy(self.analysis_allocator, ctx.ptr);
+        }
+        self.prepared.deinit(self.analysis_allocator);
         self.ast.deinit();
         self.call_resolution.deinit(self.analysis_allocator);
         self.operator_resolution.deinit(self.analysis_allocator);

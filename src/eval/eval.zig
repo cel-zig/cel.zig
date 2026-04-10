@@ -688,7 +688,18 @@ const Evaluator = struct {
             .none => value.RuntimeError.NoMatchingOverload,
             .enum_ctor => |enum_ty| try self.evalEnumConstructor(enum_ty, args.items()),
             .custom => |resolved| self.program.env.overloadAt(resolved.ref).implementation(self.allocator, args.items()),
-            .dynamic => |resolved| self.program.env.dynamicFunctionAt(resolved.ref).implementation(self.allocator, args.items()),
+            .dynamic => |resolved| blk: {
+                const func = self.program.env.dynamicFunctionAt(resolved.ref);
+                if (func.precompile) |pc| {
+                    const idx = @intFromEnum(node_index);
+                    if (idx < self.program.prepared.items.len) {
+                        if (self.program.prepared.items[idx]) |ctx| {
+                            break :blk pc.eval(self.allocator, ctx.ptr, args.items());
+                        }
+                    }
+                }
+                break :blk func.implementation(self.allocator, args.items());
+            },
             .macro => unreachable,
             .iter_var => unreachable,
             .block_index => unreachable,
