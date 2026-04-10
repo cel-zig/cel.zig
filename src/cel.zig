@@ -637,3 +637,75 @@ test "restoreFromSource rejects invalid data" {
         try std.testing.expectError(error.InvalidData, restoreFromSource(std.testing.allocator, &environment, data));
     }
 }
+
+test "unparse preserves evaluation across grouping-sensitive expressions" {
+    // String equality on the unparsed text proves the AST shape survives,
+    // but what actually matters is that the unparsed expression evaluates
+    // to the same value as the original. Subtraction, division, conditional
+    // grouping, and string-concat-vs-conditional cases are all sensitive to
+    // parenthesization in ways that would silently break with a buggy
+    // unparser.
+    var environment = try Env.init(std.testing.allocator, &.{
+        variable("a", IntType),
+        variable("b", IntType),
+        variable("c", IntType),
+        variable("x", BoolType),
+        variable("y", StringType),
+        variable("z", StringType),
+    });
+    defer environment.deinit();
+
+    var activation = Activation.init(std.testing.allocator);
+    defer activation.deinit();
+    try activation.put("a", .{ .int = 1 });
+    try activation.put("b", .{ .int = 2 });
+    try activation.put("c", .{ .int = 3 });
+    try activation.put("x", .{ .bool = true });
+    try activation.putString("y", "Y");
+    try activation.putString("z", "Z");
+
+    const Expected = union(enum) { int: i64, string: []const u8 };
+    const cases = [_]struct { expr: []const u8, expected: Expected }{
+        // Subtraction is not associative — left-assoc is the default.
+        .{ .expr = "a - b - c", .expected = .{ .int = -4 } },
+        .{ .expr = "(a - b) - c", .expected = .{ .int = -4 } },
+        .{ .expr = "a - (b - c)", .expected = .{ .int = 2 } },
+        // Division precedence vs addition.
+        .{ .expr = "a + b * c", .expected = .{ .int = 7 } },
+        .{ .expr = "(a + b) * c", .expected = .{ .int = 9 } },
+        // String concat with embedded conditional. The conditional must
+        // re-parenthesize on round-trip or it would be reinterpreted as
+        // the outermost operator and change the result type.
+        .{ .expr = "\"a\" + (x ? y : z) + \"c\"", .expected = .{ .string = "aYc" } },
+        // Right-associative conditional in else position.
+        .{ .expr = "x ? \"first\" : x ? \"second\" : \"third\"", .expected = .{ .string = "first" } },
+    };
+
+    for (cases) |case| {
+        // First evaluate the original expression.
+        var prog1 = try environment.compile(case.expr);
+        defer prog1.deinit();
+        var v1 = try prog1.evaluate(std.testing.allocator, &activation, .{});
+        defer v1.deinit(std.testing.allocator);
+
+        // Unparse, re-compile, and evaluate again.
+        const text = try unparseProgram(std.testing.allocator, &prog1);
+        defer std.testing.allocator.free(text);
+        var prog2 = try environment.compile(text);
+        defer prog2.deinit();
+        var v2 = try prog2.evaluate(std.testing.allocator, &activation, .{});
+        defer v2.deinit(std.testing.allocator);
+
+        // Both must agree with each other and with the expected value.
+        switch (case.expected) {
+            .int => |want| {
+                try std.testing.expectEqual(want, v1.int);
+                try std.testing.expectEqual(want, v2.int);
+            },
+            .string => |want| {
+                try std.testing.expectEqualStrings(want, v1.string);
+                try std.testing.expectEqualStrings(want, v2.string);
+            },
+        }
+    }
+}

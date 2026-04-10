@@ -412,6 +412,14 @@ test "unparse produces expected output" {
         // then positions, so a parenthesized form must be preserved.
         .{ .input = "(a ? b : c) ? d : e", .expected = "(a ? b : c) ? d : e" },
         .{ .input = "a ? (b ? c : d) : e", .expected = "a ? (b ? c : d) : e" },
+        // `+` binds tighter than `?:`, so this groups as
+        // `("a" + x) ? y : (z + "c")`. The unparser must preserve the
+        // shape without inserting redundant parens.
+        .{ .input = "\"a\" + x ? y : z + \"c\"", .expected = "\"a\" + x ? y : z + \"c\"" },
+        // Inverse case: a parenthesized conditional embedded inside a `+`
+        // chain. The conditional has lower precedence than `+`, so the
+        // parens around it are mandatory and must be preserved.
+        .{ .input = "\"a\" + (x ? y : z) + \"c\"", .expected = "\"a\" + (x ? y : z) + \"c\"" },
     };
     for (cases) |case| {
         var tree = try parser.parse(std.testing.allocator, case.input);
@@ -436,6 +444,8 @@ test "unparse output reparses to an equivalent AST" {
         "a ? (b ? c : d) : e",
         "1 - 2 - 3",
         "1 - (2 - 3)",
+        "\"a\" + x ? y : z + \"c\"",
+        "\"a\" + (x ? y : z) + \"c\"",
     };
     for (cases) |expr| {
         var tree1 = try parser.parse(std.testing.allocator, expr);
