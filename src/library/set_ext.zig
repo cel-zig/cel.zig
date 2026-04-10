@@ -195,3 +195,32 @@ test "sets.intersects" {
         try std.testing.expectEqual(case.expected, result.bool);
     }
 }
+
+test "sets.* honor CEL == semantics for cross-type, NaN, and maps" {
+    var environment = try cel_env.Env.initDefault(std.testing.allocator);
+    defer environment.deinit();
+    try environment.addLibrary(set_library);
+    var activation = Activation.init(std.testing.allocator);
+    defer activation.deinit();
+
+    const cases = [_]struct { expr: []const u8, expected: bool }{
+        // Cross-type numeric: 1u == 1 in CEL, so contains/equivalent must agree.
+        .{ .expr = "sets.contains([1u], [1])", .expected = true },
+        .{ .expr = "sets.contains([1], [1u])", .expected = true },
+        .{ .expr = "sets.equivalent([1u, 2], [1, 2u])", .expected = true },
+        .{ .expr = "sets.intersects([1.0], [1])", .expected = true },
+        // NaN is never equal to itself in CEL, so no NaN element can be matched.
+        .{ .expr = "sets.contains([double('NaN')], [double('NaN')])", .expected = false },
+        .{ .expr = "sets.intersects([double('NaN')], [double('NaN')])", .expected = false },
+        // Map equality is order-independent in CEL `==`.
+        .{ .expr = "sets.contains([{'a': 1, 'b': 2}], [{'b': 2, 'a': 1}])", .expected = true },
+        .{ .expr = "sets.equivalent([{'a': 1, 'b': 2}], [{'b': 2, 'a': 1}])", .expected = true },
+    };
+    for (cases) |case| {
+        var program = try compile_mod.compile(std.testing.allocator, &environment, case.expr);
+        defer program.deinit();
+        var result = try eval_impl.evalWithOptions(std.testing.allocator, &program, &activation, .{});
+        defer result.deinit(std.testing.allocator);
+        try std.testing.expectEqual(case.expected, result.bool);
+    }
+}

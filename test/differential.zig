@@ -63,23 +63,24 @@ test "cel-go differential corpus" {
 
 fn runCelGo(expr: []const u8) !GoResult {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    const repo_root = try std.fs.cwd().realpathAlloc(allocator, ".");
+    const repo_root = try std.process.currentPathAlloc(io, allocator);
     defer allocator.free(repo_root);
     const tool_dir = try std.fs.path.join(allocator, &.{ repo_root, "tools", "differential" });
     defer allocator.free(tool_dir);
 
-    const run = try std.process.Child.run(.{
-        .allocator = allocator,
+    const run = try std.process.run(allocator, io, .{
         .argv = &.{ "go", "run", ".", expr },
-        .cwd = tool_dir,
-        .max_output_bytes = 16 * 1024,
+        .cwd = .{ .path = tool_dir },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
     });
     defer allocator.free(run.stdout);
     defer allocator.free(run.stderr);
 
     switch (run.term) {
-        .Exited => |code| if (code != 0) {
+        .exited => |code| if (code != 0) {
             std.debug.print("cel-go differential command failed: {s}\n", .{run.stderr});
             return error.TestExpectedEqual;
         },

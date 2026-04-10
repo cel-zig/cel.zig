@@ -539,7 +539,6 @@ fn addSummableValues(lhs: value.Value, rhs: value.Value) value.RuntimeError!valu
 }
 
 fn valuesEqual(lhs: value.Value, rhs: value.Value) bool {
-    if (isNumericValue(lhs) and isNumericValue(rhs)) return numericValuesEqual(lhs, rhs);
     return lhs.eql(rhs);
 }
 
@@ -550,11 +549,12 @@ fn isNumericValue(v: value.Value) bool {
     };
 }
 
-fn numericValuesEqual(lhs: value.Value, rhs: value.Value) bool {
-    return (compareNumericValues(lhs, rhs) catch return false) == .eq;
-}
-
 fn compareNumericValues(lhs: value.Value, rhs: value.Value) value.RuntimeError!std.math.Order {
+    // NaN has no ordering; surface as TypeMismatch so callers (sort/min/max)
+    // turn it into a CEL runtime error rather than tripping std.math.order's
+    // unreachable.
+    if (lhs == .double and std.math.isNan(lhs.double)) return value.RuntimeError.TypeMismatch;
+    if (rhs == .double and std.math.isNan(rhs.double)) return value.RuntimeError.TypeMismatch;
     return switch (lhs) {
         .int => |left| switch (rhs) {
             .int => std.math.order(left, rhs.int),
@@ -918,6 +918,11 @@ test "list ext covers sortedness aggregates and search" {
         "[1, 3].max() == 3",
         "[1, 2, 2, 3].indexOf(2) == 1",
         "['a', 'b', 'b', 'c'].lastIndexOf('b') == 2",
+        // NaN never matches itself in CEL, so search yields -1 (not a panic).
+        "[double('NaN')].indexOf(double('NaN')) == -1",
+        "[double('NaN')].lastIndexOf(double('NaN')) == -1",
+        // Map equality is order-independent in CEL `==` and must agree here.
+        "[{'a': 1, 'b': 2}].indexOf({'b': 2, 'a': 1}) == 0",
     };
     for (cases) |expr| {
         var program = try compile_mod.compile(std.testing.allocator, &environment, expr);

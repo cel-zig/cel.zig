@@ -230,7 +230,14 @@ pub const Value = union(enum) {
         };
     }
 
+    /// CEL-semantic equality. Matches `==` in expressions:
+    ///   - cross-type numeric promotion (int/uint/double interchangeable)
+    ///   - NaN never equals anything (IEEE-754)
+    ///   - maps and messages compared by content, order-independent
+    ///   - lists compared positionally
     pub fn eql(a: Value, b: Value) bool {
+        if (isNumeric(a) and isNumeric(b)) return numericEql(a, b);
+
         const tag_a = std.meta.activeTag(a);
         const tag_b = std.meta.activeTag(b);
         if (tag_a != tag_b) return false;
@@ -238,10 +245,7 @@ pub const Value = union(enum) {
         return switch (a) {
             .int => |v| v == b.int,
             .uint => |v| v == b.uint,
-            .double => |v| {
-                if (std.math.isNan(v) and std.math.isNan(b.double)) return true;
-                return v == b.double;
-            },
+            .double => |v| !std.math.isNan(v) and !std.math.isNan(b.double) and v == b.double,
             .bool => |v| v == b.bool,
             .string => |v| std.mem.eql(u8, v, b.string),
             .bytes => |v| std.mem.eql(u8, v, b.bytes),
@@ -265,22 +269,69 @@ pub const Value = union(enum) {
                 }
                 return true;
             },
-            .map => |entries| {
-                if (entries.items.len != b.map.items.len) return false;
-                for (entries.items, b.map.items) |lhs, rhs| {
-                    if (!lhs.key.eql(rhs.key) or !lhs.value.eql(rhs.value)) return false;
+            .map => |entries| blk: {
+                if (entries.items.len != b.map.items.len) break :blk false;
+                for (entries.items) |left_entry| {
+                    var found = false;
+                    for (b.map.items) |right_entry| {
+                        if (!left_entry.key.eql(right_entry.key)) continue;
+                        if (!left_entry.value.eql(right_entry.value)) break :blk false;
+                        found = true;
+                        break;
+                    }
+                    if (!found) break :blk false;
                 }
-                return true;
+                break :blk true;
             },
-            .message => |msg| {
-                if (!std.mem.eql(u8, msg.name, b.message.name)) return false;
-                if (msg.fields.items.len != b.message.fields.items.len) return false;
-                for (msg.fields.items, b.message.fields.items) |lhs, rhs| {
-                    if (!std.mem.eql(u8, lhs.name, rhs.name)) return false;
-                    if (!lhs.value.eql(rhs.value)) return false;
+            .message => |msg| blk: {
+                if (!std.mem.eql(u8, msg.name, b.message.name)) break :blk false;
+                if (msg.fields.items.len != b.message.fields.items.len) break :blk false;
+                for (msg.fields.items) |left_field| {
+                    var found = false;
+                    for (b.message.fields.items) |right_field| {
+                        if (!std.mem.eql(u8, left_field.name, right_field.name)) continue;
+                        if (!left_field.value.eql(right_field.value)) break :blk false;
+                        found = true;
+                        break;
+                    }
+                    if (!found) break :blk false;
                 }
-                return true;
+                break :blk true;
             },
+        };
+    }
+
+    fn isNumeric(v: Value) bool {
+        return switch (v) {
+            .int, .uint, .double => true,
+            else => false,
+        };
+    }
+
+    fn numericEql(a: Value, b: Value) bool {
+        return switch (a) {
+            .int => |lhs| switch (b) {
+                .int => lhs == b.int,
+                .uint => lhs >= 0 and @as(u64, @intCast(lhs)) == b.uint,
+                .double => !std.math.isNan(b.double) and @as(f64, @floatFromInt(lhs)) == b.double,
+                else => unreachable,
+            },
+            .uint => |lhs| switch (b) {
+                .int => b.int >= 0 and lhs == @as(u64, @intCast(b.int)),
+                .uint => lhs == b.uint,
+                .double => !std.math.isNan(b.double) and @as(f64, @floatFromInt(lhs)) == b.double,
+                else => unreachable,
+            },
+            .double => |lhs| {
+                if (std.math.isNan(lhs)) return false;
+                return switch (b) {
+                    .int => lhs == @as(f64, @floatFromInt(b.int)),
+                    .uint => lhs == @as(f64, @floatFromInt(b.uint)),
+                    .double => !std.math.isNan(b.double) and lhs == b.double,
+                    else => unreachable,
+                };
+            },
+            else => unreachable,
         };
     }
 
@@ -636,10 +687,40 @@ test "list with nested string values clone is deep" {
     try std.testing.expect(v.list.items[0].string.ptr != c.list.items[0].string.ptr);
 }
 
-test "eql returns false for different types" {
-    const a: Value = .{ .int = 1 };
-    const b: Value = .{ .uint = 1 };
-    try std.testing.expect(!a.eql(b));
+test "eql implements CEL cross-type numeric equality" {
+    // int / uint / double promote per CEL == semantics.
+    try std.testing.expect((Value{ .int = 1 }).eql(.{ .uint = 1 }));
+    try std.testing.expect((Value{ .int = 1 }).eql(.{ .double = 1.0 }));
+    try std.testing.expect((Value{ .uint = 1 }).eql(.{ .double = 1.0 }));
+    try std.testing.expect(!(Value{ .int = -1 }).eql(.{ .uint = 1 }));
+    try std.testing.expect(!(Value{ .int = 2 }).eql(.{ .double = 1.0 }));
+    // Different non-numeric types remain unequal.
+    try std.testing.expect(!(Value{ .int = 1 }).eql(.{ .bool = true }));
+}
+
+test "eql treats NaN as never equal" {
+    const nan: Value = .{ .double = std.math.nan(f64) };
+    try std.testing.expect(!nan.eql(nan));
+    try std.testing.expect(!nan.eql(.{ .double = 1.0 }));
+    try std.testing.expect(!nan.eql(.{ .int = 0 }));
+}
+
+test "eql is order-independent for maps" {
+    const allocator = std.testing.allocator;
+
+    var lhs_entries: std.ArrayListUnmanaged(MapEntry) = .empty;
+    try lhs_entries.append(allocator, .{ .key = try string(allocator, "a"), .value = .{ .int = 1 } });
+    try lhs_entries.append(allocator, .{ .key = try string(allocator, "b"), .value = .{ .int = 2 } });
+    var lhs: Value = .{ .map = lhs_entries };
+    defer lhs.deinit(allocator);
+
+    var rhs_entries: std.ArrayListUnmanaged(MapEntry) = .empty;
+    try rhs_entries.append(allocator, .{ .key = try string(allocator, "b"), .value = .{ .int = 2 } });
+    try rhs_entries.append(allocator, .{ .key = try string(allocator, "a"), .value = .{ .int = 1 } });
+    var rhs: Value = .{ .map = rhs_entries };
+    defer rhs.deinit(allocator);
+
+    try std.testing.expect(lhs.eql(rhs));
 }
 
 test "typeName returns correct names" {
