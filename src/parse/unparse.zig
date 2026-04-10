@@ -289,7 +289,15 @@ pub fn needsParens(data: ast.Data, parent_prec: u8, pos: Position) bool {
     if (prec < parent_prec) return true;
     if (prec > parent_prec) return false;
     return switch (data) {
-        .binary, .conditional => pos == .right,
+        // Binary operators are left-associative: a same-precedence child in
+        // the right position must be parenthesized to preserve grouping
+        // (e.g. `a + (b + c)` differs from `(a + b) + c` for overflow).
+        .binary => pos == .right,
+        // Conditionals are right-associative: a nested conditional in the
+        // else position re-parses identically without parens, but the
+        // CEL grammar forbids a naked conditional in the condition or
+        // then position, so those must be parenthesized.
+        .conditional => pos == .left,
         else => false,
     };
 }
@@ -390,6 +398,20 @@ test "unparse produces expected output" {
         .{ .input = "a ? b : c", .expected = "a ? b : c" },
         .{ .input = "[1, 2, 3]", .expected = "[1, 2, 3]" },
         .{ .input = "{1: 2}", .expected = "{1: 2}" },
+        // Left-assoc grouping must be preserved when the right child is a
+        // same-precedence expression, otherwise overflow semantics differ.
+        .{ .input = "a + (b + c)", .expected = "a + (b + c)" },
+        .{ .input = "(a + b) + c", .expected = "a + b + c" },
+        .{ .input = "\"a\" + (\"c\" + \"d\") + \"e\"", .expected = "\"a\" + (\"c\" + \"d\") + \"e\"" },
+        // Redundant parens in source are stripped at parse time and not
+        // recreated — the result is semantically identical.
+        .{ .input = "(((((1 + 2)))))", .expected = "1 + 2" },
+        // Right-associative conditional: nested else needs no parens.
+        .{ .input = "a ? b : c ? d : e", .expected = "a ? b : c ? d : e" },
+        // The CEL grammar forbids naked conditionals in the condition and
+        // then positions, so a parenthesized form must be preserved.
+        .{ .input = "(a ? b : c) ? d : e", .expected = "(a ? b : c) ? d : e" },
+        .{ .input = "a ? (b ? c : d) : e", .expected = "a ? (b ? c : d) : e" },
     };
     for (cases) |case| {
         var tree = try parser.parse(std.testing.allocator, case.input);
@@ -397,5 +419,35 @@ test "unparse produces expected output" {
         const result = try unparse(std.testing.allocator, &tree);
         defer std.testing.allocator.free(result);
         try std.testing.expectEqualStrings(case.expected, result);
+    }
+}
+
+test "unparse output reparses to an equivalent AST" {
+    // Each input is parsed, unparsed, reparsed, and the second unparse must
+    // match the first — proving the round-trip is a fixed point.
+    const cases = [_][]const u8{
+        "a + b + c",
+        "a + (b + c)",
+        "(a + b) * (c + d)",
+        "\"a\" + (\"c\" + \"d\") + \"e\"",
+        "(((((1 + 2)))))",
+        "a ? b : c ? d : e",
+        "(a ? b : c) ? d : e",
+        "a ? (b ? c : d) : e",
+        "1 - 2 - 3",
+        "1 - (2 - 3)",
+    };
+    for (cases) |expr| {
+        var tree1 = try parser.parse(std.testing.allocator, expr);
+        defer tree1.deinit();
+        const text1 = try unparse(std.testing.allocator, &tree1);
+        defer std.testing.allocator.free(text1);
+
+        var tree2 = try parser.parse(std.testing.allocator, text1);
+        defer tree2.deinit();
+        const text2 = try unparse(std.testing.allocator, &tree2);
+        defer std.testing.allocator.free(text2);
+
+        try std.testing.expectEqualStrings(text1, text2);
     }
 }

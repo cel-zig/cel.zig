@@ -30,23 +30,27 @@ pub const Activation = struct {
 
     pub fn put(self: *Activation, name: []const u8, val: value.Value) !void {
         const owned_val = try val.clone(self.allocator);
-        errdefer {
-            var temp = owned_val;
-            temp.deinit(self.allocator);
-        }
+        // putOwned consumes owned_val on both success and failure, so no
+        // errdefer needed here.
         try self.putOwned(name, owned_val);
     }
 
+    /// Takes ownership of `val`. On any error path the caller's value is
+    /// deinit'd before returning, so callers (including putString/putBytes)
+    /// don't need their own errdefer when they pass freshly-allocated values.
     pub fn putOwned(self: *Activation, name: []const u8, val: value.Value) !void {
+        var owned = val;
+        errdefer owned.deinit(self.allocator);
+
         if (self.vars.getPtr(name)) |existing| {
             existing.deinit(self.allocator);
-            existing.* = val;
+            existing.* = owned;
             return;
         }
 
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
-        try self.vars.put(self.allocator, owned_name, val);
+        try self.vars.put(self.allocator, owned_name, owned);
     }
 
     pub fn putString(self: *Activation, name: []const u8, text: []const u8) !void {
@@ -194,4 +198,29 @@ test "putOwned overwrites existing string value without leak" {
     try activation.putString("key", "first");
     try activation.putString("key", "second");
     try std.testing.expectEqualStrings("second", activation.get("key").?.string);
+}
+
+test "putOwned cleans up val when name dupe fails" {
+    // Allow only the original putString's dupe to succeed; the second
+    // allocation (owned_name inside putOwned) must fail. The duped value
+    // bytes from the outer putString must not leak — testing.allocator
+    // detects leaks at deinit.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var activation = Activation.init(failing.allocator());
+    defer activation.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, activation.putString("k", "v"));
+    try std.testing.expect(activation.get("k") == null);
+}
+
+test "putOwned cleans up val when vars.put fails" {
+    // First two allocations (value dupe + name dupe) succeed; the
+    // hashmap's internal allocation fails. Both the duped string and
+    // the duped name must be freed.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 2 });
+    var activation = Activation.init(failing.allocator());
+    defer activation.deinit();
+
+    try std.testing.expectError(error.OutOfMemory, activation.putString("k", "v"));
+    try std.testing.expect(activation.get("k") == null);
 }

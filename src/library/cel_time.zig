@@ -159,7 +159,7 @@ pub fn parseTimestamp(text: []const u8) Error!Timestamp {
     const month = try parseFixedInt(text, 5, 2, Error.InvalidTimestamp);
     if (text[7] != '-') return Error.InvalidTimestamp;
     const day = try parseFixedInt(text, 8, 2, Error.InvalidTimestamp);
-    if (text[10] != 'T' and text[10] != 't') return Error.InvalidTimestamp;
+    if (text[10] != 'T') return Error.InvalidTimestamp;
     const hour = try parseFixedInt(text, 11, 2, Error.InvalidTimestamp);
     if (text[13] != ':') return Error.InvalidTimestamp;
     const minute = try parseFixedInt(text, 14, 2, Error.InvalidTimestamp);
@@ -181,7 +181,16 @@ pub fn parseTimestamp(text: []const u8) Error!Timestamp {
         nanos = try parseFractionalNanos(text[frac_start..index]);
     }
 
-    const offset_seconds = try parseTimeZoneOffset(text[index..]);
+    // RFC 3339 mandates the trailing offset start with `Z`, `+`, or `-`.
+    // parseTimeZoneOffset is more permissive (it also accepts bare `HH:MM`
+    // for the timestamp selector argument), so check the leading byte here.
+    const offset_text = text[index..];
+    if (offset_text.len == 0) return Error.InvalidTimestamp;
+    switch (offset_text[0]) {
+        'Z', '+', '-' => {},
+        else => return Error.InvalidTimestamp,
+    }
+    const offset_seconds = parseTimeZoneOffset(offset_text) catch return Error.InvalidTimestamp;
     const day_count = daysFromCivil(year, @intCast(month), @intCast(day));
     const day_seconds = (@as(i64, hour) * 3600) + (@as(i64, minute) * 60) + @as(i64, second);
     const utc_seconds = std.math.sub(i64, std.math.add(i64, day_count * seconds_per_day, day_seconds) catch return Error.Overflow, offset_seconds) catch return Error.Overflow;
@@ -360,13 +369,24 @@ fn resolveTimeZoneOffsetAt(text: ?[]const u8, unix_seconds: i64) Error!i32 {
     };
 }
 
+/// Parses a timezone offset.
+///
+/// Accepts the forms cel-spec requires for the second argument of timestamp
+/// selectors (e.g. `ts.getHours('02:00')`):
+///   - `Z` / `UTC` / `GMT` → 0
+///   - `±HH:MM` → signed offset
+///   - `HH:MM`  → positive offset (cel-spec / cel-go behavior)
+///
+/// Note: `parseTimestamp` calls this with the trailing portion of an RFC 3339
+/// timestamp, which is *not* allowed to omit the sign. That stricter check is
+/// enforced at the parseTimestamp boundary, not here.
 fn parseTimeZoneOffset(text: []const u8) Error!i32 {
-    if (text.len == 1 and (text[0] == 'Z' or text[0] == 'z')) return 0;
+    if (text.len == 1 and text[0] == 'Z') return 0;
     if (std.mem.eql(u8, text, "UTC") or std.mem.eql(u8, text, "GMT")) return 0;
 
+    if (text.len != 5 and text.len != 6) return Error.UnsupportedTimeZone;
     var sign: i32 = 1;
     var start: usize = 0;
-    if (text.len != 5 and text.len != 6) return Error.UnsupportedTimeZone;
     if (text[0] == '+' or text[0] == '-') {
         sign = if (text[0] == '-') -1 else 1;
         start = 1;
@@ -843,6 +863,9 @@ test "timestamp parsing rejects invalid inputs" {
         "2023-01-01T00:60:00Z", // minute 60
         "2023-01-01T00:00:60Z", // second 60
         "2023-01-01T00:00:00",  // missing timezone
+        "2023-01-01t00:00:00Z", // lowercase 't' separator (cel-go strict)
+        "2023-01-01T00:00:00z", // lowercase 'z' suffix
+        "2023-01-01T00:00:0005:30", // unsigned offset, missing separator and sign
     };
     for (invalid) |text| {
         try std.testing.expectError(Error.InvalidTimestamp, parseTimestamp(text));

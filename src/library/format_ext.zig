@@ -172,7 +172,7 @@ fn validateFormat(allocator: std.mem.Allocator, kind: FormatKind, text: []const 
         .label_value => if (!isLabelValue(text)) try addError(&out, allocator, "must be a valid label value"),
         .uri => if (!isUri(text)) try addError(&out, allocator, "invalid URI"),
         .uuid => if (!isUuid(text)) try addError(&out, allocator, "does not match the UUID format"),
-        .byte => if (!isBase64(text)) try addError(&out, allocator, "invalid base64"),
+        .byte => if (!isBase64(allocator, text)) try addError(&out, allocator, "invalid base64"),
         .date => if (!isDate(text)) try addError(&out, allocator, "invalid date"),
         .datetime => if (!isDateTime(text)) try addError(&out, allocator, "invalid datetime"),
     }
@@ -270,10 +270,13 @@ fn isUuid(text: []const u8) bool {
     return true;
 }
 
-fn isBase64(text: []const u8) bool {
+fn isBase64(allocator: std.mem.Allocator, text: []const u8) bool {
+    // Delegate to std.base64.standard so canonical-form rules and edge
+    // cases (last-char bit constraints, padding length) match the spec.
+    // The decoded bytes are thrown away — we only need the success bit.
     const len = std.base64.standard.Decoder.calcSizeForSlice(text) catch return false;
-    const buf = std.heap.page_allocator.alloc(u8, len) catch return false;
-    defer std.heap.page_allocator.free(buf);
+    const buf = allocator.alloc(u8, len) catch return false;
+    defer allocator.free(buf);
     std.base64.standard.Decoder.decode(buf, text) catch return false;
     return true;
 }
@@ -396,4 +399,19 @@ test "format validation covers leap dates uri paths and base64" {
     }
     try std.testing.expectEqual(@as(usize, 1), invalid_base64.items.len);
     try std.testing.expectEqualStrings("invalid base64", invalid_base64.items[0].string);
+}
+
+test "isBase64 routes through caller's allocator and matches std.base64" {
+    const alloc = std.testing.allocator;
+    // Valid standard base64.
+    try std.testing.expect(isBase64(alloc, "aGVsbG8=")); // "hello"
+    try std.testing.expect(isBase64(alloc, "YWJjZA==")); // "abcd"
+    try std.testing.expect(isBase64(alloc, "YWJjZGVm")); // "abcdef"
+    try std.testing.expect(isBase64(alloc, "Zm9vYmFy")); // "foobar"
+    // Invalid.
+    try std.testing.expect(!isBase64(alloc, "abc")); // length not multiple of 4
+    try std.testing.expect(!isBase64(alloc, "ab~d")); // out-of-alphabet char
+    try std.testing.expect(!isBase64(alloc, "ab cd")); // whitespace
+    try std.testing.expect(!isBase64(alloc, "%")); // matches the existing
+                                                   // validateFormat case
 }
